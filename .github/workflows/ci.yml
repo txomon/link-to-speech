@@ -21,6 +21,32 @@ jobs:
       - name: Vet
         run: cd backend && go vet ./...
 
+      - name: Test
+        run: cd backend && go test -race -count=1 ./...
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          working-directory: backend
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t link-to-speech:ci backend/
+
   addon:
     runs-on: ubuntu-latest
     steps:
