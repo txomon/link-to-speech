@@ -1,0 +1,15 @@
+# Binary
+backend/article-to-audio
+
+# Environment
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
