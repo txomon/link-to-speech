@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+
+      - name: Build
+        run: cd backend && go build ./...
+
+      - name: Vet
+        run: cd backend && go vet ./...
+
+  addon:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate manifest
+        run: python3 -c "import json; json.load(open('firefox-addon/manifest.json'))"
+
+      - name: Package addon
+        run: cd firefox-addon && zip -r ../link-to-speech-addon.xpi . -x '*.git*'
