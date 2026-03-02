@@ -41,36 +41,17 @@ firefox-addon/
 ├── manifest.json
 ├── background.js          # Listens for button click, injects scripts, sends to backend
 ├── content-script.js      # Runs Readability.js on the page DOM, sends result back
-├── readability.js          # Mozilla Readability.js library (vendored)
-├── icons/
-│   ├── icon-48.png
-│   └── icon-96.png
-└── options.html (optional) # Settings page for server URL, Telegram chat ID, etc.
+├── readability.js         # Mozilla Readability.js library (vendored from @mozilla/readability npm)
+├── options.html           # Settings page for server URL, secret, chat ID
+├── options.js             # Settings page logic (browser.storage.local)
+└── icons/                 # TODO: needs icon-48.png and icon-96.png
 ```
 
 ### manifest.json Permissions Required
 
-```json
-{
-  "manifest_version": 2,
-  "name": "Article to TTS",
-  "version": "1.0",
-  "permissions": [
-    "activeTab",
-    "scripting"
-  ],
-  "browser_action": {
-    "default_icon": "icons/icon-48.png",
-    "default_title": "Send article to TTS"
-  },
-  "background": {
-    "scripts": ["background.js"]
-  }
-}
-```
-
-- `activeTab` is sufficient — no need for broad host permissions. It grants access to the current tab only when the user clicks the button.
-- No need for `<all_urls>` or specific host patterns.
+- `activeTab` — grants access to the current tab only when the user clicks the button. No need for `<all_urls>`.
+- `storage` — for persisting settings (server URL, secret, chat ID).
+- `notifications` — for success/failure feedback after sending.
 
 ### Content Script (Pseudocode)
 
@@ -144,10 +125,9 @@ browser.runtime.onMessage.addListener(async (msg) => {
 
 Receive extracted article text, generate audio via a TTS API, and deliver the audio file to the user's Telegram chat.
 
-### Tech Stack Options
+### Tech Stack
 
-- **Python** (recommended): Flask or FastAPI for the HTTP endpoint, `python-telegram-bot` or `aiogram` for Telegram integration.
-- **Node.js** (alternative): Express for the HTTP endpoint, `node-telegram-bot-api` or `telegraf` for Telegram.
+- **Go**: Standard library `net/http` for the HTTP endpoint, `go-telegram-bot-api/v5` for Telegram integration, `go-shiori/go-readability` for server-side article extraction.
 
 ### Flow
 
@@ -161,30 +141,24 @@ Receive extracted article text, generate audio via a TTS API, and deliver the au
 
 ```
 POST /api/tts
+Authorization: Bearer <SERVER_SECRET>
 Content-Type: application/json
 
 {
   "title": "Article Title",
   "text": "Full article plain text...",
-  "url": "https://example.com/article"
+  "url": "https://example.com/article",
+  "chat_id": 123456789           // optional, falls back to DEFAULT_CHAT_ID
 }
 
-Response: 200 OK { "status": "sent" }
+Response: 200 OK { "status": "processing" }
 ```
+
+Processing is asynchronous — the response returns immediately and the audio is delivered via Telegram when ready.
 
 ### TTS API
 
-The specific TTS provider is a user choice. Common options:
-
-| Provider | Notes |
-|----------|-------|
-| OpenAI TTS (`tts-1`, `tts-1-hd`) | High quality, simple API, supports multiple voices. Max ~4096 chars per request — chunking needed for long articles. |
-| ElevenLabs | Very natural voices, streaming support, generous free tier. |
-| Google Cloud TTS | Wide language support, WaveNet voices. |
-| Azure Cognitive Services TTS | Neural voices, SSML support. |
-| Coqui TTS / Piper (self-hosted) | Free, runs locally, no API costs. Lower quality. |
-
-**Important:** Most TTS APIs have per-request character limits. The backend must handle chunking long articles into segments, generating audio for each, and concatenating the resulting audio files (e.g., using `pydub` or `ffmpeg`).
+OpenAI TTS (`tts-1` or `tts-1-hd`) with `opus` response format (OGG/Opus). Max 4096 chars per request — the backend chunks long articles at paragraph/sentence/word boundaries and concatenates the resulting audio files using `ffmpeg`.
 
 ### Telegram Bot API Integration
 
@@ -192,54 +166,45 @@ The specific TTS provider is a user choice. Common options:
 2. The user starts a conversation with the bot to obtain their `chat_id`.
 3. The backend uses `sendAudio` (for MP3 with metadata) or `sendVoice` (for OGG, plays inline) to deliver the file.
 
-```python
-# Example using python-telegram-bot
-import telegram
-
-bot = telegram.Bot(token=BOT_TOKEN)
-bot.send_audio(
-    chat_id=USER_CHAT_ID,
-    audio=open("article.mp3", "rb"),
-    title=article_title,
-    caption=f"🔊 {article_title}\n{article_url}"
-)
-```
-
-- `sendAudio`: Supports title, performer, duration metadata. File appears as a music track. Max 50MB.
-- `sendVoice`: Plays inline like a voice message. Must be OGG with OPUS codec. Max 50MB.
+The backend uses `sendVoice` (OGG/OPUS, plays inline as a voice message). Max 50MB per file.
 
 ### Text Preprocessing
 
-Before sending to TTS:
+Implemented in `backend/processor.go`:
 
-- Strip any remaining HTML tags if present.
-- Remove or replace characters that cause TTS issues (e.g., excessive URLs, code blocks, special unicode).
-- Normalize whitespace.
-- If text exceeds TTS API limits, split at sentence boundaries (use nltk, spacy, or regex-based sentence splitting).
-- Optionally prepend the article title as a spoken header.
+- Strip HTML tags via regex.
+- Decode common HTML entities (`&amp;`, `&lt;`, `&gt;`, `&quot;`, `&#39;`, `&nbsp;`).
+- Remove URLs (not useful for TTS).
+- Normalize whitespace (collapse multiple spaces, limit consecutive newlines).
+- Chunk at paragraph boundaries (`\n\n`), then sentence boundaries (`[.!?]\s+`), then word boundaries as fallback. Max 4096 chars per chunk.
+- Article title is prepended as a spoken header.
 
-### Server Structure (Python Example)
+### Server Structure
 
 ```
 backend/
-├── main.py                 # FastAPI/Flask app with /api/tts endpoint
-├── tts_service.py          # TTS API integration, chunking, audio concatenation
-├── telegram_service.py     # Telegram bot message sending
-├── text_processor.py       # Text cleaning and preprocessing
-├── config.py               # Environment variables, API keys
-├── requirements.txt
-└── Dockerfile (optional)
+├── main.go             # Entry point, HTTP server with /api/tts endpoint
+├── bot.go              # Telegram bot handlers, message sending
+├── tts.go              # OpenAI TTS API client, chunking, ffmpeg concatenation
+├── extractor.go        # Server-side article extraction via go-readability
+├── processor.go        # Text cleaning and chunking
+├── config.go           # Environment variables
+├── go.mod
+├── .env.example
+└── Dockerfile
 ```
 
 ### Environment Variables / Configuration
 
 ```
-TTS_API_KEY=...              # TTS provider API key
-TTS_PROVIDER=openai          # Which TTS service to use
-TTS_VOICE=alloy              # Voice selection
-TELEGRAM_BOT_TOKEN=...       # From @BotFather
-TELEGRAM_CHAT_ID=...         # Target chat to send audio to
-SERVER_SECRET=...            # (Optional) Shared secret to authenticate addon requests
+TELEGRAM_BOT_TOKEN=...       # From @BotFather (required)
+OPENAI_API_KEY=...           # OpenAI API key (required)
+ALLOWED_USER_IDS=...         # Comma-separated Telegram user IDs (empty = allow all)
+DEFAULT_CHAT_ID=...          # Default chat ID for addon requests
+TTS_VOICE=alloy              # Voice selection (default: alloy)
+TTS_MODEL=tts-1              # Model: tts-1 or tts-1-hd (default: tts-1)
+SERVER_SECRET=...            # Shared secret for addon HTTP requests (optional)
+LISTEN_ADDR=:8080            # HTTP listen address (default: :8080)
 ```
 
 ### Security Considerations
@@ -252,14 +217,14 @@ SERVER_SECRET=...            # (Optional) Shared secret to authenticate addon re
 
 ## Alternative Flow: Telegram Bot Only (No Addon)
 
-For articles that *don't* have anti-bot protections, the bot can also accept URLs directly:
+For articles that *don't* have anti-bot protections, the bot also accepts URLs directly:
 
 1. User sends a URL to the Telegram bot.
-2. Bot fetches the page server-side using `trafilatura` (Python) or `@mozilla/readability` + `jsdom` (Node.js).
+2. Bot fetches the page server-side using `go-shiori/go-readability`.
 3. If extraction succeeds, proceed with TTS and send audio back.
 4. If extraction fails (anti-bot), inform the user to use the Firefox addon instead.
 
-This gives the user two paths: the addon for protected sites, and a simple "paste link in Telegram" flow for everything else.
+This gives the user two paths: the addon for protected sites, and a simple "paste link in Telegram" flow for everything else. This is the primary flow (implemented first).
 
 ---
 
@@ -295,13 +260,13 @@ This gives the user two paths: the addon for protected sites, and a simple "past
 
 ---
 
-## other decisions
+## Decisions
 
-1. **TTS Provider**: Openai
-2. **Audio Format**: OGG/OPUS via `sendVoice` (inline playback)?
-3. **Backend Language**: golang
-4. **Hosting**: self hosted
-5. **Authentication**: Log in with telegram into the bot
-6. **Chunking Strategy**: How to split by paragraph or section if necessary
-7. **Dual Mode**: Should the Telegram bot also accept direct URL messages for server-side extraction as a fallback, and that should be the first part to implement, addon would come afterwards
-8. **Addon Distribution**: Personal use only
+1. **TTS Provider**: OpenAI (`tts-1` / `tts-1-hd`, configurable via `TTS_MODEL`)
+2. **Audio Format**: OGG/OPUS via `sendVoice` (inline playback in Telegram)
+3. **Backend Language**: Go — single binary, `go-telegram-bot-api/v5`, `go-shiori/go-readability`
+4. **Hosting**: Self-hosted (Docker or bare binary + ffmpeg)
+5. **Authentication**: `ALLOWED_USER_IDS` whitelist (static config). `/start` command shows user their ID for configuration.
+6. **Chunking Strategy**: Paragraph → sentence → word boundary splitting, max 4096 chars per chunk, concatenation via ffmpeg
+7. **Dual Mode**: Telegram bot accepts URLs directly (primary, implemented first). Firefox addon for protected sites (also implemented).
+8. **Addon Distribution**: Personal use only (load via `about:debugging` or unsigned `.xpi`)
