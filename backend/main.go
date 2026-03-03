@@ -87,6 +87,6 @@ func addonHandler(bot *Bot, cfg *Config) http.HandlerFunc {
 		go bot.ProcessArticle(chatID, req.Title, req.Text, req.URL)
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"status": "processing"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "processing"})
 	}
 }

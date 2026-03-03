@@ -151,10 +151,6 @@ func TestChunkText_UnicodeText(t *testing.T) {
 	text := strings.Repeat("日本語テスト。", 20)
 	chunks := ChunkText(text, 50)
 	for _, c := range chunks {
-		if len(c) > 50 {
-			// Note: ChunkText uses len() which counts bytes, not runes
-			// This is acceptable since OpenAI TTS limit is character-based
-		}
 		if c == "" {
 			t.Error("got empty chunk")
 		}
